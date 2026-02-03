@@ -19,3 +19,7 @@ navigator sandbox claude  # or opencode
 ## Developing
 
 See `CONTRIBUTING.md` for more information about developing and contributing to Navigator.
+
+## Architecture
+
+See `architecture/sandbox.md`.

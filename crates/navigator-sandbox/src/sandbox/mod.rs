@@ -1,0 +1,28 @@
+//! Platform sandboxing implementation.
+
+use crate::policy::SandboxPolicy;
+use miette::Result;
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+/// Apply sandboxing rules for the current platform.
+///
+/// # Errors
+///
+/// Returns an error if the sandbox cannot be applied.
+pub fn apply(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::apply(policy, workdir)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (policy, workdir);
+        warn!("Sandbox policy provided but platform sandboxing is not yet implemented");
+        Ok(())
+    }
+}

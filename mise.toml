@@ -118,7 +118,22 @@ run = "cargo run -p navigator-cli --"
 [tasks.sandbox]
 description = "Run the sandbox container with an interactive shell"
 depends = ["//docker:build:factory"]
-run = "docker run -it navigator-factory -i /bin/bash"
+run = """
+TTY_FLAG=""
+if [ -t 0 ]; then
+  TTY_FLAG="-it"
+fi
+CMD=("$@")
+if [ "$#" -eq 0 ]; then
+  CMD=("/bin/bash")
+fi
+docker run ${TTY_FLAG} \
+  -v ${PWD}/dev-sandbox-policy.yaml:/var/navigator/policy.yaml:ro \
+  -e HOME=/sandbox \
+  -w /sandbox \
+  -e NAVIGATOR_SANDBOX_POLICY=/var/navigator/policy.yaml \
+  navigator-factory -i "${CMD[@]}"
+"""
 
 # ============================================================================
 # Helm Tasks

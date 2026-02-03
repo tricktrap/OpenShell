@@ -1,9 +1,10 @@
 //! Navigator Sandbox - process sandbox and monitor.
 
 use clap::Parser;
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 use navigator_sandbox::run_sandbox;
 
@@ -28,6 +29,10 @@ struct Args {
     #[arg(long, short = 'i')]
     interactive: bool,
 
+    /// Path to YAML policy file for sandbox configuration.
+    #[arg(long, env = "NAVIGATOR_SANDBOX_POLICY", required = true)]
+    policy: Option<String>,
+
     /// Log level (trace, debug, info, warn, error).
     #[arg(long, default_value = "warn", env = "NAVIGATOR_LOG_LEVEL")]
     log_level: String,
@@ -45,10 +50,28 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level)),
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/navigator.log")
+        .into_diagnostic()?;
+    let (file_writer, _file_guard) = tracing_appender::non_blocking(file);
+
+    let stdout_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+    let file_filter = EnvFilter::new("info");
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .with_filter(stdout_filter),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+                .with_filter(file_filter),
         )
         .init();
 
@@ -59,6 +82,7 @@ async fn main() -> Result<()> {
         args.workdir,
         args.timeout,
         args.interactive,
+        args.policy,
         args.health_check,
         args.health_port,
     )

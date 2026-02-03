@@ -2,6 +2,10 @@
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for instructions on how to perform common operations (building, testing, linting, running components).
 
+## Sandbox Infra Changes
+
+- If you change sandbox infrastructure, ensure `mise run sandbox` succeeds.
+
 ## Commits
 
 - Always use [Conventional Commits](https://www.conventionalcommits.org/) format for commit messages

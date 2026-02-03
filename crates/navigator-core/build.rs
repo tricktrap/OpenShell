@@ -1,15 +1,6 @@
-use std::env;
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Use bundled protoc from protobuf-src
-    // SAFETY: This is run at build time in a single-threaded build script context.
-    // No other threads are reading environment variables concurrently.
-    #[allow(unsafe_code)]
-    unsafe {
-        env::set_var("PROTOC", protobuf_src::protoc());
-    }
-
     let proto_file = "../../proto/navigator.proto";
     let out_dir = PathBuf::from("src/proto");
 

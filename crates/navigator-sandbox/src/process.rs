@@ -1,9 +1,12 @@
 //! Process management and signal handling.
 
+use crate::policy::{NetworkMode, SandboxPolicy};
+use crate::sandbox;
 use miette::{IntoDiagnostic, Result};
 use nix::sys::signal::{self, Signal};
-use nix::unistd::Pid;
+use nix::unistd::{Group, User, Pid};
 use std::process::Stdio;
+use std::ffi::CString;
 use tokio::process::{Child, Command};
 use tracing::{debug, warn};
 
@@ -19,7 +22,13 @@ impl ProcessHandle {
     /// # Errors
     ///
     /// Returns an error if the process fails to start.
-    pub fn spawn(program: &str, args: &[String], workdir: Option<&str>, interactive: bool) -> Result<Self> {
+    pub fn spawn(
+        program: &str,
+        args: &[String],
+        workdir: Option<&str>,
+        interactive: bool,
+        policy: &SandboxPolicy,
+    ) -> Result<Self> {
         let mut cmd = Command::new(program);
         cmd.args(args)
             .stdin(Stdio::inherit())
@@ -32,18 +41,46 @@ impl ProcessHandle {
             cmd.current_dir(dir);
         }
 
+        if matches!(policy.network.mode, NetworkMode::Proxy) {
+            let proxy = policy.network.proxy.as_ref().ok_or_else(|| {
+                miette::miette!("Network mode is set to proxy but no proxy configuration was provided")
+            })?;
+            if let Some(unix_socket) = &proxy.unix_socket {
+                cmd.env("NAVIGATOR_PROXY_SOCKET", unix_socket);
+            }
+            if let Some(http_addr) = proxy.http_addr {
+                let proxy_url = format!("http://{http_addr}");
+                cmd.env("ALL_PROXY", &proxy_url)
+                    .env("HTTP_PROXY", &proxy_url)
+                    .env("HTTPS_PROXY", &proxy_url);
+            }
+        }
+
         // Set up process group for signal handling (non-interactive mode only).
         // In interactive mode, we inherit the parent's process group to maintain
         // proper terminal control for shells and interactive programs.
         // SAFETY: pre_exec runs after fork but before exec in the child process.
         // setpgid is async-signal-safe and safe to call in this context.
         #[cfg(unix)]
-        if !interactive {
+        {
+            let policy = policy.clone();
+            let workdir = workdir.map(str::to_string);
             #[allow(unsafe_code)]
             unsafe {
-                cmd.pre_exec(|| {
-                    // Create new process group
-                    libc::setpgid(0, 0);
+                cmd.pre_exec(move || {
+                    if !interactive {
+                        // Create new process group
+                        libc::setpgid(0, 0);
+                    }
+
+                    sandbox::apply(&policy, workdir.as_deref()).map_err(|err| {
+                        std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                    })?;
+
+                    drop_privileges(&policy).map_err(|err| {
+                        std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                    })?;
+
                     Ok(())
                 });
             }
@@ -104,6 +141,56 @@ impl ProcessHandle {
 
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn drop_privileges(policy: &SandboxPolicy) -> Result<()> {
+    let user_name = match policy.process.run_as_user.as_deref() {
+        Some(name) if !name.is_empty() => Some(name),
+        _ => None,
+    };
+    let group_name = match policy.process.run_as_group.as_deref() {
+        Some(name) if !name.is_empty() => Some(name),
+        _ => None,
+    };
+
+    if user_name.is_none() && group_name.is_none() {
+        return Ok(());
+    }
+
+    let user = if let Some(name) = user_name {
+        User::from_name(name).into_diagnostic()?.ok_or_else(|| {
+            miette::miette!("Sandbox user not found: {name}")
+        })?
+    } else {
+        User::from_uid(nix::unistd::geteuid())
+            .into_diagnostic()?
+            .ok_or_else(|| miette::miette!("Failed to resolve current user"))?
+    };
+
+    let group = if let Some(name) = group_name {
+        Group::from_name(name).into_diagnostic()?.ok_or_else(|| {
+            miette::miette!("Sandbox group not found: {name}")
+        })?
+    } else {
+        Group::from_gid(user.gid)
+            .into_diagnostic()?
+            .ok_or_else(|| miette::miette!("Failed to resolve user primary group"))?
+    };
+
+    if user_name.is_some() {
+        let user_cstr =
+            CString::new(user.name.clone()).map_err(|_| miette::miette!("Invalid user name"))?;
+        nix::unistd::initgroups(user_cstr.as_c_str(), group.gid).into_diagnostic()?;
+    }
+
+    nix::unistd::setgid(group.gid).into_diagnostic()?;
+
+    if user_name.is_some() {
+        nix::unistd::setuid(user.uid).into_diagnostic()?;
+    }
+
+    Ok(())
 }
 
 /// Process exit status.

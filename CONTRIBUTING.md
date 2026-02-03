@@ -11,7 +11,7 @@ curl https://mise.run | sh
 
 After installing `mise` be sure to activate the environment by running `mise activate` or [add it to your shell](https://mise.jdx.dev/getting-started.html).
 
-Project uses Rust 1.85+ and Python 3.12+.
+Project uses Rust 1.88+ and Python 3.12+.
 
 ## Getting started
 

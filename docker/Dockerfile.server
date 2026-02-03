@@ -2,13 +2,14 @@
 # Multi-stage build for smaller final image
 
 # Stage 1: Rust builder
-FROM rust:1.85-slim AS builder
+FROM rust:1.88-slim AS builder
 
 # Install build dependencies for protobuf-src
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     g++ \
     make \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
