@@ -197,34 +197,73 @@ pub async fn tls_connect_upstream(
     Ok(tls_stream)
 }
 
-/// Build a rustls `ClientConfig` with Mozilla root CAs for upstream connections.
-pub fn build_upstream_client_config() -> Arc<ClientConfig> {
+/// Build a rustls `ClientConfig` with Mozilla root CAs (and optional extra CAs)
+/// for upstream connections.
+///
+/// Each entry in `extra_ca_pems` should be a PEM-encoded certificate. Invalid
+/// PEM entries cause an immediate error (fail-fast).
+pub fn build_upstream_client_config(extra_ca_pems: &[String]) -> Result<Arc<ClientConfig>> {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    for (i, pem) in extra_ca_pems.iter().enumerate() {
+        let certs: Vec<CertificateDer<'static>> =
+            rustls_pemfile::certs(&mut BufReader::new(pem.as_bytes()))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| miette::miette!("invalid PEM in additional_ca_certs[{i}]: {e}"))?;
+        if certs.is_empty() {
+            return Err(miette::miette!(
+                "additional_ca_certs[{i}] contains no valid certificates"
+            ));
+        }
+        for cert in certs {
+            root_store
+                .add(cert)
+                .map_err(|e| miette::miette!("failed to add additional_ca_certs[{i}]: {e}"))?;
+        }
+    }
+
+    if !extra_ca_pems.is_empty() {
+        tracing::info!(
+            count = extra_ca_pems.len(),
+            "Added user-provided CA certificates to upstream trust store"
+        );
+    }
 
     let mut config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
-    Arc::new(config)
+    Ok(Arc::new(config))
 }
 
 /// Write CA certificate files for the sandbox trust store.
 ///
 /// Writes:
 /// 1. Standalone CA cert PEM (for `NODE_EXTRA_CA_CERTS` which is additive)
-/// 2. Combined bundle: system CAs + sandbox CA (for `SSL_CERT_FILE` which replaces default)
+/// 2. Combined bundle: system CAs + extra user CAs + sandbox CA
+///    (for `SSL_CERT_FILE` which replaces default)
 ///
 /// Returns `(ca_cert_path, combined_bundle_path)`.
-pub fn write_ca_files(ca: &SandboxCa, output_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+pub fn write_ca_files(
+    ca: &SandboxCa,
+    output_dir: &Path,
+    extra_ca_pems: &[String],
+) -> Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(output_dir).into_diagnostic()?;
 
     let ca_cert_path = output_dir.join("openshell-ca.pem");
     std::fs::write(&ca_cert_path, ca.cert_pem()).into_diagnostic()?;
 
-    // Read system CA bundle and append our CA
+    // Read system CA bundle and append extra user CAs + our CA
     let mut combined = read_system_ca_bundle();
+    for pem in extra_ca_pems {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(pem);
+    }
     if !combined.is_empty() && !combined.ends_with('\n') {
         combined.push('\n');
     }
@@ -373,7 +412,38 @@ mod tests {
     #[test]
     fn upstream_config_alpn() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = build_upstream_client_config();
+        let config = build_upstream_client_config(&[]).unwrap();
         assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()]);
+    }
+
+    #[test]
+    fn upstream_config_with_extra_ca() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let ca = SandboxCa::generate().unwrap();
+        let pem = ca.cert_pem().to_string();
+        let config = build_upstream_client_config(&[pem]).unwrap();
+        assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()]);
+    }
+
+    #[test]
+    fn upstream_config_rejects_invalid_pem() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let result = build_upstream_client_config(&["not a certificate".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_ca_files_includes_extra_cas() {
+        let ca = SandboxCa::generate().unwrap();
+        let extra_pem = ca.cert_pem().to_string(); // reuse CA pem as a stand-in
+        let dir = tempfile::tempdir().unwrap();
+        let (_, bundle_path) = write_ca_files(&ca, dir.path(), &[extra_pem.clone()]).unwrap();
+        let bundle = std::fs::read_to_string(&bundle_path).unwrap();
+        // Bundle should contain the extra CA and the sandbox CA
+        let cert_count = bundle.matches("-----BEGIN CERTIFICATE-----").count();
+        assert!(
+            cert_count >= 2,
+            "bundle should contain at least 2 certs, found {cert_count}"
+        );
     }
 }

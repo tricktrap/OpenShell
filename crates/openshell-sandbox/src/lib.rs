@@ -219,13 +219,24 @@ pub async fn run_sandbox(
         match SandboxCa::generate() {
             Ok(ca) => {
                 let tls_dir = std::path::Path::new("/etc/openshell-tls");
-                match write_ca_files(&ca, tls_dir) {
+                match write_ca_files(&ca, tls_dir, &policy.additional_ca_certs) {
                     Ok(paths) => {
                         // /etc/openshell-tls is subsumed by the /etc baseline
                         // path injected by enrich_*_baseline_paths(), so no
                         // explicit Landlock entry is needed here.
 
-                        let upstream_config = build_upstream_client_config();
+                        let upstream_config = match build_upstream_client_config(
+                            &policy.additional_ca_certs,
+                        ) {
+                            Ok(config) => config,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to build upstream TLS config with extra CAs, TLS termination disabled"
+                                );
+                                return Err(e);
+                            }
+                        };
                         let cert_cache = CertCache::new(ca);
                         let state = Arc::new(ProxyTlsState::new(cert_cache, upstream_config));
                         info!("TLS termination enabled: ephemeral CA generated");
@@ -1186,6 +1197,7 @@ async fn load_policy(
             },
             landlock: config.landlock,
             process: config.process,
+            additional_ca_certs: Vec::new(),
         };
         enrich_sandbox_baseline_paths(&mut policy);
         return Ok((policy, Some(Arc::new(engine))));

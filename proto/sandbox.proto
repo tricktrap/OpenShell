@@ -17,6 +17,9 @@ message SandboxPolicy {
   ProcessPolicy process = 4;
   // Network access policies keyed by name (e.g. "claude_code", "gitlab").
   map<string, NetworkPolicyRule> network_policies = 5;
+  // Additional CA certificates (PEM-encoded) trusted for upstream TLS connections.
+  // Each entry should contain a single PEM-encoded certificate block.
+  repeated string additional_ca_certs = 6;
 }
 
 // Filesystem access policy.

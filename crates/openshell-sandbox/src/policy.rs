@@ -17,6 +17,8 @@ pub struct SandboxPolicy {
     pub network: NetworkPolicy,
     pub landlock: LandlockPolicy,
     pub process: ProcessPolicy,
+    /// Additional CA certificates (PEM-encoded) trusted for upstream TLS.
+    pub additional_ca_certs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +117,7 @@ impl TryFrom<ProtoSandboxPolicy> for SandboxPolicy {
             network,
             landlock: proto.landlock.map(LandlockPolicy::from).unwrap_or_default(),
             process: proto.process.map(ProcessPolicy::from).unwrap_or_default(),
+            additional_ca_certs: proto.additional_ca_certs,
         })
     }
 }

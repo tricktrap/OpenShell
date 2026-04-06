@@ -524,6 +524,7 @@ mod tests {
             network: NetworkPolicy::default(),
             landlock: LandlockPolicy::default(),
             process,
+            additional_ca_certs: Vec::new(),
         }
     }
 

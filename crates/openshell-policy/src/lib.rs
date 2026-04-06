@@ -36,6 +36,8 @@ struct PolicyFile {
     process: Option<ProcessDef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     network_policies: BTreeMap<String, NetworkPolicyRuleDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    additional_ca_certs: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -245,6 +247,7 @@ fn to_proto(raw: PolicyFile) -> SandboxPolicy {
             run_as_group: p.run_as_group,
         }),
         network_policies,
+        additional_ca_certs: raw.additional_ca_certs,
     }
 }
 
@@ -352,6 +355,7 @@ fn from_proto(policy: &SandboxPolicy) -> PolicyFile {
         landlock,
         process,
         network_policies,
+        additional_ca_certs: policy.additional_ca_certs.clone(),
     }
 }
 
@@ -448,6 +452,7 @@ pub fn restrictive_default_policy() -> SandboxPolicy {
             run_as_group: "sandbox".into(),
         }),
         network_policies: HashMap::new(),
+        additional_ca_certs: Vec::new(),
     }
 }
 
@@ -493,6 +498,8 @@ pub enum PolicyViolation {
     FieldTooLong { path: String, length: usize },
     /// Too many filesystem paths in the policy.
     TooManyPaths { count: usize },
+    /// An additional CA certificate entry is invalid.
+    InvalidCaCert { index: usize, reason: String },
 }
 
 impl fmt::Display for PolicyViolation {
@@ -521,6 +528,9 @@ impl fmt::Display for PolicyViolation {
                     f,
                     "too many filesystem paths ({count} > {MAX_FILESYSTEM_PATHS})"
                 )
+            }
+            Self::InvalidCaCert { index, reason } => {
+                write!(f, "additional_ca_certs[{index}]: {reason}")
             }
         }
     }
@@ -605,6 +615,26 @@ pub fn validate_sandbox_policy(
                     path: path_str.clone(),
                 });
             }
+        }
+    }
+
+    // Validate additional CA certificates
+    for (i, pem) in policy.additional_ca_certs.iter().enumerate() {
+        if pem.contains("-----BEGIN PRIVATE KEY-----")
+            || pem.contains("-----BEGIN RSA PRIVATE KEY-----")
+            || pem.contains("-----BEGIN EC PRIVATE KEY-----")
+        {
+            violations.push(PolicyViolation::InvalidCaCert {
+                index: i,
+                reason: "contains a private key (only certificates are allowed)".to_string(),
+            });
+            continue;
+        }
+        if !pem.contains("-----BEGIN CERTIFICATE-----") {
+            violations.push(PolicyViolation::InvalidCaCert {
+                index: i,
+                reason: "does not contain a PEM certificate block".to_string(),
+            });
         }
     }
 
@@ -1009,6 +1039,7 @@ network_policies:
             filesystem: None,
             landlock: None,
             network_policies: HashMap::new(),
+            ..Default::default()
         };
         assert!(validate_sandbox_policy(&policy).is_ok());
     }
